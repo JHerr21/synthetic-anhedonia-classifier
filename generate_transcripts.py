@@ -1,81 +1,118 @@
+from dotenv import load_dotenv
+load_dotenv()
+
 import os
-from groq import Groq
+from groq import Groq, RateLimitError, APIConnectionError, InternalServerError
+import re
+import argparse
+import json
 import random
 import time
 
-MODEL = "llama-3.3-70b-versatile"
+MODEL = "openai/gpt-oss-120b"
 
 # Initialize the Groq client
 client = Groq(
-    api_key=os.environ.get("GROQ_API_KEY")  # Best practice: use os.environ.get("GROQ_API_KEY")
+    api_key=os.environ.get("GROQ_API_KEY") 
 )
 
 SYSTEM_PROMPT = """
 ROLE
-You generate realistic, de-identified synthetic transcripts of clinical interviews
-for simulation purposes. The patient presents with anhedonia. The transcript must
-read like a real verbatim clinical transcript, not a dramatization.
+You generate realistic, de-identified synthetic transcripts of clinical
+interviews for a research dataset. Each transcript belongs to one of two arms:
+HIGH anhedonia or LOW anhedonia. The two arms must be matched on everything
+except hedonic capacity. A reader should not be able to tell the arm from the
+interviewer's questions, the transcript length, the patient's diagnosis, or the
+amount of ordinary disfluency, only from how the patient talks about pleasure,
+interest, and anticipation.
 
-PARAMETERS
-Each request provides these parameters in the user message:
-- Underlying context (e.g., major depressive disorder | schizophrenia, negative
-  symptoms | Parkinson's disease)
-- Anhedonia subtype emphasis (anticipatory | consummatory | social | mixed)
-- Severity (mild | moderate | severe)
-- Interview format
-- Patient profile (age, sex, life context)
-- Approximate number of interviewer-patient exchanges
-- Whether to include a risk screen
+PARAMETERS (given in the user message)
+- Anhedonia arm: high | low
+- Underlying context: major depressive disorder | schizophrenia, negative
+  symptoms | Parkinson's disease
+- Anhedonia subtype emphasis (high arm only): anticipatory | consummatory |
+  social | mixed
+- Severity (high arm only): moderate | severe
+- Patient profile: age, sex, life context
+- Number of exchanges
+- Include risk screen: yes | no
 
-PATIENT SPEECH SPECIFICATION
-Express these ONLY through how the patient talks. The patient never names or
-describes these features.
-1. Verbal output: responses are short and low in elaboration. Scale by severity.
-   Mild: mostly full answers with occasional minimal replies. Moderate: frequent
-   1-2 sentence answers, needs follow-up prompts. Severe: many one-word or
-   "I don't know" answers.
-2. Response latency: mark hesitation using transcript conventions: "um," "uh,"
-   [pause], [long pause]. Frequency increases with severity.
-3. Emotional vocabulary: very few positive-emotion words. When pleasure is
-   discussed, use flat or neutral descriptors ("it was fine," "okay I guess").
-   Avoid dramatic sadness; anhedonia is absence of pleasure, not overt despair.
-4. Temporal framing of enjoyment: pleasure is referenced mostly in the past
-   tense ("I used to really like...").
-5. Anticipatory subtype: little expectation that future events will be
-   enjoyable; struggles to name things to look forward to.
-6. Consummatory subtype: still does activities but reports they "don't feel
-   like anything."
-7. Social subtype: describes withdrawing from people without distress about it,
-   with little interest in connection.
-8. Engagement: rarely asks questions back, rarely volunteers new topics, gives
-   vague, generalized answers when asked for specifics.
-9. Context overlay: shape the remaining speech to fit the underlying context.
-   Schizophrenia: mild alogia and blunted affect cues. Parkinson's: occasional
-   reduced volume noted as [quietly] and slowed responses. MDD: elevated
-   first-person focus and some self-critical statements.
+FIXED INTERVIEW PROTOCOL (identical in both arms)
+The interviewer covers these topics in this order, phrased naturally. It may
+add one brief follow-up per topic in either arm. Follow-ups must not be more
+frequent or more probing in one arm than the other.
+1. How have things been going lately?
+2. Walk me through a typical day this past week.
+3. What do you do in your free time these days?
+4. Tell me about the last time you did something you enjoyed.
+5. How was that compared to how it would have felt in the past?
+6. Who do you spend time with? How is that for you?
+7. How has your appetite been? Do you enjoy your food?
+8. How has your sleep been?
+9. Is there anything coming up that you're looking forward to?
+10. When something good happens, how do you usually react?
+11. (Context-relevant question about the underlying condition, e.g.,
+    mood, medication, or physical symptoms.)
+12. Is there anything else you think I should know?
+If the risk screen is enabled, add a standard brief risk screen after topic 11
+in both arms.
 
-REALISM CONSTRAINTS
-- Not every answer shows every marker. Include natural variability, including
-  1-2 moments of slightly greater engagement (e.g., a brief flicker of interest
-  when a specific memory comes up).
-- The patient uses everyday language, never clinical terms ("anhedonia," "flat
-  affect," "lack of motivation" as a label).
-- The interviewer behaves like a trained clinician: open questions, gentle
-  follow-ups, reflective statements, no leading questions, no diagnosis stated
-  during the interview.
-- Avoid stereotypes and melodrama.
-- Include suicidality only if the request says to include a risk screen, in
-  which case the interviewer conducts an appropriate screen.
-- Use realistic, non-identifying details only. Vary hobbies, jobs, and life
-  details; do not default to common choices.
+SHARED BASELINE (both arms)
+- Ordinary speech disfluency is present in everyone: occasional "um," "uh,"
+  restarts, and brief [pause] markers at a normal conversational rate.
+- Every patient gives some short answers and some longer ones.
+- Context overlays apply in both arms, independent of anhedonia:
+  Parkinson's: occasional [quietly], slowed responses, frustration about motor
+  limits. Schizophrenia: some concreteness or mild tangentiality. MDD: low mood,
+  worry, guilt, poor sleep or concentration.
+- The patient never uses clinical terms ("anhedonia," "flat affect").
+
+HIGH ANHEDONIA ARM: patient speech markers
+Express only through how the patient talks:
+1. Elaboration drops specifically on pleasure, interest, and social topics
+   (topics 3–7, 9–10). Moderate: brief, needs prompting. Severe: frequent
+   one-word or "I don't know" answers on these topics.
+2. Longer hesitation before answering pleasure-related questions ([long pause]
+   more frequent than baseline).
+3. Few positive-emotion words; enjoyment is described flatly ("it was fine").
+4. Enjoyment is framed mostly in the past tense ("I used to...").
+5. Anticipatory emphasis: struggles to name anything to look forward to.
+   Consummatory emphasis: still does activities but they "don't feel like
+   anything." Social emphasis: withdraws from people without distress, little
+   interest in connection.
+6. Rarely volunteers detail or asks questions back.
+7. Allow 1–2 moments of slightly greater engagement for realism.
+Anhedonia means absence of pleasure, not dramatic sadness.
+
+LOW ANHEDONIA ARM: patient speech markers
+Hedonic capacity is intact. The patient may still have real problems from
+their underlying condition. Do not make them cheerful, unusually talkative, or
+upbeat. They are ordinary people who still enjoy things.
+1. On pleasure topics, gives specific, concrete details (what they did, with
+   whom, a small moment they liked).
+2. Uses positive-emotion words at a normal rate, without exaggeration.
+3. Describes enjoyment in the present tense; reduced activity is explained by
+   practical limits (pain, tremor, time, money, fatigue), not lost interest.
+   The key contrast: "I can't do it as much" rather than "it doesn't do
+   anything for me."
+4. Can name at least one specific thing they're looking forward to.
+5. Shows interest in at least one relationship, even if strained.
+6. For MDD: may report sadness, stress, or worry, but mood still lifts in
+   response to good events.
+
+LEAKAGE CONTROLS
+- Transcript length follows the requested number of exchanges in both arms.
+- Do not mention the arm, the word "anhedonia," or any label anywhere.
+- Vary hobbies, jobs, and life details; do not reuse stock examples.
 
 OUTPUT FORMAT
 - Plain transcript only: no annotations, tags, commentary, or summary.
+- First line, identical in both arms: [Synthetic transcript, simulated
+  clinical interview]
 - Speaker labels: "Interviewer:" and "Patient:"
-- First line: [Synthetic transcript, simulated clinical interview]
 
-Before writing, silently plan which markers appear in which exchanges and how
-severity shapes them. Output only the final transcript.
+Before writing, silently plan how the assigned arm's markers appear across the
+protocol topics, then output only the final transcript.
 """
 
 DEFAULT_FORMAT = (
@@ -91,10 +128,9 @@ CONTEXTS = [
 ]
 
 SUBTYPES = ["anticipatory", "consummatory", "social", "mixed"]
-SEVERITIES = ["mild", "moderate", "severe"]
+SEVERITIES = ["moderate", "severe"]
 
-def random_profile(context: str) -> dict:
-    # Rough age ranges by context so profiles stay plausible
+def random_profile(context: str, rng: random.Random) -> dict:
     age_ranges = {
         "major depressive disorder": (19, 75),
         "schizophrenia, negative symptoms": (20, 55),
@@ -102,38 +138,42 @@ def random_profile(context: str) -> dict:
     }
     lo, hi = age_ranges.get(context, (20, 75))
     return {
-        "age": random.randint(lo, hi),
+        "age": rng.randint(lo, hi),
     }
+    
 
 
 def build_user_message(params: dict) -> str:
-    p = params["profile"]
-    return (
-        "Generate one transcript with these parameters:\n"
-        f"- Underlying context: {params['context']}\n"
-        f"- Anhedonia subtype emphasis: {params['subtype']}\n"
-        f"- Severity: {params['severity']}\n"
-        f"- Interview format: {params['format']}\n"
-        f"- Patient profile: {p['age']}-year-old\n"
-        f"- Length: approximately {params['n_exchanges']} exchanges\n"
-        f"- Include risk screen: {'yes' if params['include_risk'] else 'no'}"
-    )
+    lines = [
+        "Generate one transcript with these parameters:",
+        f"- Anhedonia arm: {params['arm']}",
+        f"- Underlying context: {params['context']}",
+    ]
+    if params["arm"] == "high":
+        lines += [f"- Anhedonia subtype emphasis: {params['subtype']}",
+                  f"- Severity: {params['severity']}"]
+    lines += [
+        f"- Patient profile: {params['profile']['age']}-year-old",
+        f"- Number of exchanges: {params['n_exchanges']}",
+        f"- Include risk screen: {'yes' if params['include_risk'] else 'no'}",
+    ]
+    return "\n".join(lines)
 
-def generate(client: Groq, params: dict, temperature: float,
-             max_retries: int = 3) -> str:
+def generate(client: Groq, params: dict, temperature: float, seed, max_retries=3) -> str:
     for attempt in range(max_retries):
         try:
             response = client.chat.completions.create(
                 model=MODEL,
-                max_tokens=4000,
+                max_tokens=8000,
                 temperature=temperature,
+                seed=seed,
                 messages=[
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": build_user_message(params)},
                 ],
             )
             return response.choices[0].message.content
-        except (Groq.RateLimitError, Groq.APIStatusError) as e:
+        except (RateLimitError, APIConnectionError, InternalServerError) as e:
             wait = 2 ** attempt * 5
             print(f"  API error ({e.__class__.__name__}), retrying in {wait}s")
             time.sleep(wait)
@@ -171,42 +211,52 @@ def main():
     parser.add_argument("--n-exchanges", type=int, default=15)
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--include-risk", action="store_true")
-    parser.add_argument("--out", default="transcripts.jsonl")
+    parser.add_argument("--out", default="data/complete_transcripts.jsonl")
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
 
     random.seed(args.seed)
-    client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY
+    client = Groq()  # reads GROQ_API_KEY
 
-    combos = list(itertools.product(CONTEXTS, SUBTYPES, SEVERITIES))
-    total = len(combos) * args.n_per_combo
-    print(f"Generating {total} transcripts -> {args.out}")
+    rng = random.Random(args.seed)
 
-    with open(args.out, "a", encoding="utf-8") as f:
-        i = 0
-        for context, subtype, severity in combos:
-            for _ in range(args.n_per_combo):
-                i += 1
-                params = {
+    # Balanced design: 10 high + 10 low per context = 60 total
+    design = []
+    for context in CONTEXTS:
+        for arm in ["high", "low"]:
+            for k in range(1):
+                design.append({
+                    "arm": arm,
                     "context": context,
-                    "subtype": subtype,
-                    "severity": severity,
-                    "format": DEFAULT_FORMAT,
-                    "profile": random_profile(context),
+                    "subtype": SUBTYPES[k % 4] if arm == "high" else None,
+                    "severity": ["moderate", "severe"][k % 2] if arm == "high" else None,
+                    "profile": random_profile(context, rng),
                     "n_exchanges": args.n_exchanges,
                     "include_risk": args.include_risk,
-                }
-                print(f"[{i}/{total}] {context} | {subtype} | {severity}")
-                transcript = generate(client, params, args.temperature)
-                record = {
-                    "params": params,
-                    "model": MODEL,
-                    "temperature": args.temperature,
-                    "transcript": transcript,
-                    "metrics": marker_metrics(transcript),
-                }
-                f.write(json.dumps(record, ensure_ascii=False) + "\n")
-                f.flush()
+                })
+    rng.shuffle(design)  # interleave arms so API drift isn't confounded with label
+
+    total = len(design)
+    print(f"Generating {total} transcripts -> {args.out}")
+
+    with open(args.out, "w", encoding="utf-8") as f:
+        for i, params in enumerate(design, start=1):
+            print(f"[{i}/{total}] {params['arm']} | {params['context']} | "
+                  f"{params['subtype']} | {params['severity']}")
+            transcript = generate(client, params, args.temperature,
+                                  seed=args.seed + i)
+            record = {
+                "id": i,
+                "label": 1 if params["arm"] == "high" else 0,
+                "params": params,
+                "model": MODEL,
+                "temperature": args.temperature,
+                "seed": args.seed + i,
+                "transcript": transcript,
+                "metrics": marker_metrics(transcript),
+            }
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+            f.flush()
 
 
 if __name__ == "__main__":
