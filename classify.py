@@ -50,7 +50,7 @@ SEED = 42
 def main():
     os.makedirs(OUT_DIR, exist_ok=True)
 
-    with open("data/transcripts.jsonl", encoding="utf-8") as f:
+    with open("data/complete_transcripts.jsonl", encoding="utf-8") as f:
         records = [json.loads(line) for line in f]
 
     X = pd.DataFrame([extract_features(r["transcript"]) for r in records])

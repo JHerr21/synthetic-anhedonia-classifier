@@ -1,0 +1,16 @@
+{
+  "auc_cv_mean": 1.0,
+  "permutation_p": 0.001,
+  "n_permutations": 1000,
+  "null_auc_mean": 0.4966,
+  "null_auc_sd": 0.1067,
+  "n_samples": 60,
+  "cv": "StratifiedKFold(5, shuffle=True)",
+  "seed": 42,
+  "features": [
+    "words_per_turn",
+    "short_pauses",
+    "long_pauses",
+    "positive_word_rate"
+  ]
+}

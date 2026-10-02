@@ -1,3 +1,7 @@
 # synthetic-anhedonia-classifier
 This repo contains the software code for generating synthetic interview transcripts to simulate the conversation and language of patients with anhedonia.
 
+# Transcript Generation and Classification
+To run this software, install the following libraries and packages detailed in the requirements.txt file and run the generate_transcripts.py file to generate transcripts. This will generate 60 transcripts with in a json file with details such as context, subtype, severity, and profile of the patient. After collecting this data, a logistic regression classifier to extract features from the transcripts and an AUC is given after a 1000 iteration permutation test.
+
+The classifier for this model will most likely succeed in this scenario simply due to the fact that prompt is written in the features. Intuitively a high AUC implies strong ability to distinguish between the classes, but in this case it is difficult to tell whether or not the classifier correctly output features that detect anhedonia in real patients. This is because LLM strictly followed the prompt and the model may have mirrored its phrases. And although the template matching may have reduced the model's quick ability to learn, it will not entirely remove that possibility. More validation must be done on real transcripts as ground truth data.

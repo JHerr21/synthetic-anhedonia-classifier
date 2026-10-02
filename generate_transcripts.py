@@ -224,7 +224,7 @@ def main():
     design = []
     for context in CONTEXTS:
         for arm in ["high", "low"]:
-            for k in range(1):
+            for k in range(10):
                 design.append({
                     "arm": arm,
                     "context": context,
